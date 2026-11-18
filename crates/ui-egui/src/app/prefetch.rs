@@ -40,6 +40,50 @@ fn between_picture_and_sound(cur: i64, f: i64, target: i64, looping: bool) -> bo
 /// frames finishing together.
 const PACE_TAU: f64 = 0.5;
 
+/// The least refresh rate while a preview plays (Hz): the timeline's playhead moves smoothly at it.
+pub(crate) const PLAYBACK_REPAINT_HZ: f64 = 60.0;
+
+/// Overrides [`PLAYBACK_REPAINT_HZ`] (`0`: refresh at every display refresh while playing, as
+/// before the cap; for comparisons).
+pub(crate) const PLAYBACK_MAX_HZ_ENV: &str = "EFFECTCRAFT_PLAYBACK_MAX_HZ";
+
+/// [`PLAYBACK_REPAINT_HZ`], or the value of [`PLAYBACK_MAX_HZ_ENV`] (read once).
+fn playback_max_hz() -> f64 {
+    static HZ: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *HZ.get_or_init(|| parse_max_hz(std::env::var(PLAYBACK_MAX_HZ_ENV).ok().as_deref()))
+}
+
+/// A refresh-rate override: a finite number from 0 up (0 = uncapped); anything else is the default.
+fn parse_max_hz(v: Option<&str>) -> f64 {
+    v.and_then(|v| v.trim().parse::<f64>().ok()).filter(|hz| hz.is_finite() && *hz >= 0.0).unwrap_or(PLAYBACK_REPAINT_HZ)
+}
+
+/// Time between refreshes while a preview plays: `max_hz`, or twice the rate its frames come at
+/// (`fps / step`) when that is faster, so every frame is drawn close to when it is due; at most
+/// 1000 a second. `None` (refresh at once) when `max_hz` is 0. Asking at every pass instead redrew
+/// the whole window at the display's rate (240 times a second on a 240 Hz panel) for a 24 or
+/// 30 fps preview, and on a hybrid-graphics laptop copied each of those frames from the discrete
+/// GPU to the integrated one driving the panel. Finished frames still wake the UI at once.
+pub(crate) fn playback_repaint_interval(fps: f64, step: i64, max_hz: f64) -> Option<std::time::Duration> {
+    if !(max_hz.is_finite() && max_hz > 0.0) {
+        return None;
+    }
+    let frames_per_s = if fps.is_finite() && fps > 0.0 { fps / step.max(1) as f64 } else { 0.0 };
+    let hz = max_hz.max(2.0 * frames_per_s).min(1000.0);
+    Some(std::time::Duration::from_secs_f64(1.0 / hz))
+}
+
+impl PlaybackPass<'_> {
+    /// Ask for the next refresh of a playing preview ([`playback_repaint_interval`]).
+    fn repaint(&self) {
+        let (fps, step) = self.plan.map_or((self.frame_rate.as_f64(), 1), |p| (p.fps, p.step));
+        match playback_repaint_interval(fps, step, playback_max_hz()) {
+            Some(d) => self.ctx.request_repaint_after(d),
+            None => self.ctx.request_repaint(),
+        }
+    }
+}
+
 /// The rate a preview plays at when frames arrive slower than its frame rate: proportional to
 /// the cached frames ahead (`lead` of `target`), so it settles where the clock takes frames as
 /// fast as they arrive and the lead stays put; smoothed over [`PACE_TAU`] (`dt` seconds since
@@ -217,7 +261,7 @@ impl EffectcraftApp {
             self.session.set_time(fr.tick_of(p.first));
             self.start_audio(fr.tick_of(p.first));
         }
-        ctx.request_repaint();
+        pass.repaint();
         true
     }
 
@@ -278,7 +322,7 @@ impl EffectcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else if self.meter.active() {
             self.meter.update([0.0; 2], now);
-            ctx.request_repaint();
+            ctx.request_repaint_after(crate::audio::METER_REFRESH);
         }
     }
 
@@ -289,7 +333,7 @@ impl EffectcraftApp {
     /// (an Extended Viewer frame is larger than the comp), so the wait always ends. Returns true
     /// while it holds the first frame.
     fn hold_first_frame(&mut self, pass: &PlaybackPass<'_>, fit: i64) -> bool {
-        let PlaybackPass { ctx, comp, scale, now, plan, series, cur, ahead, frame_rate: fr, .. } = *pass;
+        let PlaybackPass { comp, scale, now, plan, series, cur, ahead, frame_rate: fr, .. } = *pass;
         if !self.playback.starting {
             return false;
         }
@@ -310,7 +354,7 @@ impl EffectcraftApp {
             || now - self.playback.starting_since >= STARTUP_LIMIT;
         if !give_up && !need.is_some_and(|n| self.cached_ahead(&p, &series, cur, n)) {
             self.playback.waiting = true;
-            ctx.request_repaint();
+            pass.repaint();
             return true;
         }
         self.playback.starting = false;
@@ -368,7 +412,7 @@ impl EffectcraftApp {
     /// Audio clock drives playback: show the frame under the audible sample. Returns true when
     /// the audio path handled this pass (including stopping at the end).
     fn advance_audio_clock(&mut self, pass: &PlaybackPass<'_>, step: i64) -> bool {
-        let PlaybackPass { ctx, now, series, video, frame_rate: fr, cur, .. } = *pass;
+        let PlaybackPass { now, series, video, frame_rate: fr, cur, .. } = *pass;
         let FrameWindow { first: wa, last: wb } = pass.window;
         let Some(a) = &self.audio else { return false };
         if a.finished() {
@@ -403,7 +447,7 @@ impl EffectcraftApp {
             // Dropping frames: a lower resolution may keep up (the rate shown says so).
             self.step_down(now, pass.scale);
         }
-        ctx.request_repaint();
+        pass.repaint();
         true
     }
 
@@ -440,7 +484,7 @@ impl EffectcraftApp {
     /// rate it runs at their pace ([`pace_for`]): every frame shows, evenly, as After Effects
     /// plays a preview it hasn't cached yet; real time again once the frames ahead are cached.
     fn advance_frame_clock(&mut self, pass: &PlaybackPass<'_>, step: i64, fit_ahead: i64) {
-        let PlaybackPass { ctx, now, plan, video, frame_rate: fr, cur, series, .. } = *pass;
+        let PlaybackPass { now, plan, video, frame_rate: fr, cur, series, .. } = *pass;
         let FrameWindow { last: wb, .. } = pass.window;
         // The plan carries the rate the preview was started with (and `play_with` copies it to
         // `Playback::fps`). Deriving the frame from the plan keeps a logic-only tick correct even
@@ -489,7 +533,7 @@ impl EffectcraftApp {
         if !video {
             // Audio-only preview without an audio device: the clock runs, the time stays.
             self.playback.audio_frame = Some(target);
-            ctx.request_repaint();
+            pass.repaint();
             return;
         }
         if self.frames.is_cached(&FrameKey { frame: target, ..series }) {
@@ -509,7 +553,7 @@ impl EffectcraftApp {
             self.playback.start_wall = now;
             self.playback.start_frame = fr.frame_at(self.session.time());
         }
-        ctx.request_repaint();
+        pass.repaint();
     }
 
     /// The paced clock: it owes `pace` played frames a second (plus what the last passes left
@@ -517,7 +561,7 @@ impl EffectcraftApp {
     /// (owing one frame, so that frame shows the moment it arrives), and at the end of a preview
     /// that doesn't loop it stops.
     fn advance_paced(&mut self, pass: &PlaybackPass<'_>, pace: f64, dt: f64) {
-        let PlaybackPass { ctx, now, frame_rate: fr, cur, series, .. } = *pass;
+        let PlaybackPass { now, frame_rate: fr, cur, series, .. } = *pass;
         let step = pass.plan.map_or(1, |p| p.step).max(1) as f64;
         let mut owed = self.playback.pace_acc.unwrap_or(0.0) + dt * pace / step;
         let mut f = cur;
@@ -544,7 +588,7 @@ impl EffectcraftApp {
             self.playback.frame_shown(now);
         }
         self.playback.pace_acc = Some(owed);
-        ctx.request_repaint();
+        pass.repaint();
     }
 
     /// Cached frames among the next `max` in play order, and how many of those there are (fewer
@@ -778,5 +822,49 @@ mod startup_tests {
         assert_eq!(startup_frames(8, 0, 0, frame), 1);
         // A zero frame size counts as 1 byte: no division by zero.
         assert_eq!(startup_frames(8, 24, 10, 0), 8);
+    }
+}
+
+#[cfg(test)]
+mod repaint_cap_tests {
+    use super::{PLAYBACK_REPAINT_HZ, parse_max_hz, playback_repaint_interval};
+
+    fn hz(d: Option<std::time::Duration>) -> f64 {
+        1.0 / d.expect("capped").as_secs_f64()
+    }
+
+    #[test]
+    fn film_and_video_previews_refresh_at_60_hz_not_at_the_display_rate() {
+        for fps in [23.976, 24.0, 25.0, 29.97, 30.0] {
+            assert!((hz(playback_repaint_interval(fps, 1, 60.0)) - 60.0).abs() < 1e-3, "{fps}");
+        }
+    }
+
+    #[test]
+    fn fast_previews_refresh_twice_per_frame_and_frame_steps_count() {
+        assert!((hz(playback_repaint_interval(59.94, 1, 60.0)) - 119.88).abs() < 1e-3);
+        // every other frame of a 59.94 fps preview: 29.97 frames a second, so the floor
+        assert!((hz(playback_repaint_interval(59.94, 2, 60.0)) - 60.0).abs() < 1e-3);
+        assert!((hz(playback_repaint_interval(10_000.0, 1, 60.0)) - 1000.0).abs() < 1e-3, "bounded");
+    }
+
+    #[test]
+    fn zero_means_uncapped_and_hostile_inputs_fall_back() {
+        assert_eq!(playback_repaint_interval(24.0, 1, 0.0), None);
+        assert_eq!(playback_repaint_interval(24.0, 1, f64::NAN), None);
+        for (fps, step) in [(f64::NAN, 1), (f64::INFINITY, 1), (-24.0, 1), (0.0, 1), (24.0, 0), (24.0, -3)] {
+            let d = playback_repaint_interval(fps, step, 60.0);
+            assert!(hz(d) >= 60.0 - 1e-3 && hz(d) <= 1000.0 + 1e-3, "{fps} {step}");
+        }
+    }
+
+    #[test]
+    fn the_override_parses_numbers_from_zero_up() {
+        assert_eq!(parse_max_hz(None), PLAYBACK_REPAINT_HZ);
+        assert_eq!(parse_max_hz(Some(" 0 ")), 0.0);
+        assert_eq!(parse_max_hz(Some("120")), 120.0);
+        for bad in ["", "-5", "fast", "inf", "NaN"] {
+            assert_eq!(parse_max_hz(Some(bad)), PLAYBACK_REPAINT_HZ, "{bad}");
+        }
     }
 }

@@ -380,7 +380,7 @@ pub fn audio(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     if app.meter.active() || app.audio.is_some() {
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(crate::audio::METER_REFRESH);
     }
 }
 

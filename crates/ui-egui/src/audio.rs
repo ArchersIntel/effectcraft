@@ -580,6 +580,10 @@ impl Default for Meter {
 
 /// Bottom of the meter scale (dB).
 pub const METER_FLOOR: f32 = -48.0;
+/// How often animated meters ask for a refresh. Their ballistics are per second of wall time
+/// ([`Meter::update`]), so the rate changes only smoothness; asking at every pass redrew the
+/// whole window at the display's rate for as long as audio played or the levels fell.
+pub const METER_REFRESH: std::time::Duration = std::time::Duration::from_micros(16_667);
 /// How long the peak marker holds (s) and how fast levels fall (dB/s).
 const PEAK_HOLD: f64 = 1.5;
 const FALL_DB_PER_S: f32 = 30.0;

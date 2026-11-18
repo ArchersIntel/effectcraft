@@ -35,6 +35,12 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+/// How soon a frame rendered ahead (no one waiting for it yet) refreshes the window: finished jobs
+/// within this span share one refresh (see `release`).
+pub(crate) const BACKGROUND_WAKE: std::time::Duration = std::time::Duration::from_micros(16_667);
+/// How soon a frame stored in the disk cache refreshes the window (its cache indicators).
+pub(crate) const DISK_WAKE: std::time::Duration = std::time::Duration::from_millis(100);
+
 use effectcraft_engine::project::{Comp, Heard, ItemId, ItemKind, Node, Project, PropGroup};
 use effectcraft_engine::render::disk_cache::{self, DiskCache};
 use effectcraft_engine::render::reads::{ReadFiles, ReadLog};
@@ -1864,7 +1870,8 @@ impl Worker {
             && put_disk_frame(dc, *k, &ci, &files, self.virtual_id.as_deref(), *since)
             && let Some(ctx) = &self.ctx
         {
-            ctx.request_repaint();
+            // (only the disk-cache indicators change: one refresh per DISK_WAKE for all of them)
+            ctx.request_repaint_after(DISK_WAKE);
         }
         true
     }
@@ -1920,7 +1927,11 @@ impl Worker {
             }
         }
         if let Some(ctx) = &self.ctx {
-            ctx.request_repaint();
+            // The frame something waits for shows at once. Frames rendered ahead (preview
+            // prefetch, idle caching) share one refresh per BACKGROUND_WAKE: waking at each of
+            // them redrew the whole window 100+ times a second while a 4K preview rendered ahead,
+            // and a playing preview refreshes on its own clock anyway.
+            if urgent { ctx.request_repaint() } else { ctx.request_repaint_after(BACKGROUND_WAKE) }
         }
     }
 
