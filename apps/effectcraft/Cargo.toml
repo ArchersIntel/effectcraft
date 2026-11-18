@@ -29,6 +29,11 @@ chrono = { workspace = true }
 # MIT; safe process handles and target-only memory observation for the crash helper.
 sysinfo = { version = "=0.37.2", default-features = false, features = ["system"] }
 
+# OS hardware video decoding in front of FilmCraft's software decoders (src/main.rs). Desktop only:
+# the web build decodes in software.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+filmcraft-platform = { workspace = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Native GNOME/Wayland controls without a bundled title font.
 winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita-notitle"] }

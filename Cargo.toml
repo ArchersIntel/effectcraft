@@ -98,16 +98,26 @@ craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5a7a63a21dd03dd1a2bc6c308a3a6ce818caae87", features = ["h264-encode", "prores", "hevc-encode", "vp9-encode", "av1", "threads"] }
 
 # footage decoding: FilmCraft's pure-Rust crates, pinned to a revision (plan/adr/0001).
-# Only `crates/media`, `crates/export` and `crates/interchange` may depend on these.
-filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-frame = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-color = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
+# Only `crates/media`, `crates/export` and `crates/interchange` may depend on these, except
+# `filmcraft-platform` below.
+# This fork (ArchersIntel/effectcraft, branch hw-decode-nvdec) pins FilmCraft to the
+# ArchersIntel/filmcraft branch windows-playback-nvdec (storytold/filmcraft#5022), which adds NVDEC
+# hardware decoding on 64-bit Windows. Every filmcraft-* crate must come from the same revision:
+# filmcraft-platform registers its decoders in its own copy of filmcraft-codecs.
+filmcraft-codecs = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-media = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-frame = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-color = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-time = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
 # timeline interchange (EDL, FCP7 XML, FCPXML, OTIO) for Premiere Pro interop (crates/interchange only)
-filmcraft-interchange = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
-filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "3f137a7ed420cac79b32145f5243b7f98b31f71c" }
+filmcraft-interchange = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-project = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+filmcraft-geom = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
+# OS hardware video decoding (NVDEC, Media Foundation, VideoToolbox, VA-API) with software fallback.
+# FilmCraft's one crate with OS FFI (its `unsafe` stays in its own FFI modules). Upstream
+# EffectCraft has this on hold (storytold/effectcraft#804, #819): fork-only. Only the desktop app
+# (`apps/effectcraft`, non-wasm) depends on it.
+filmcraft-platform = { git = "https://github.com/ArchersIntel/filmcraft", rev = "92c5c69020070091b04f10409c3a8a96f7954c5b" }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }

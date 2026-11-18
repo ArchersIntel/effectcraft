@@ -193,6 +193,12 @@ fn start_helpers_if_opted_in(session: &mut effectcraft_engine::Session) {
 /// session log is attached), scan fonts, honor the launch guard's backend choice and open the eframe window.
 /// Builds the session, loads settings, plugins, the requested project/media and the optional control server, then
 /// reports startup failure through `startup_failed`. Returns the event loop's result.
+/// Whether the OS hardware video decoders are registered: yes unless the environment value says
+/// `0`, `off`, `false` or `no` (any case, surrounding spaces ignored).
+fn hardware_decoding_wanted(value: Option<&str>) -> bool {
+    !value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"))
+}
+
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if crash_report::maybe_run(&args, |description| {
@@ -252,6 +258,18 @@ fn run_desktop(reporter: &crash_report::Shutdown) -> eframe::Result {
             }
         }
         Err(error) => log::warn!("crash reporter could not start: {error}"),
+    }
+    // OS hardware video decoders (NVDEC on NVIDIA, Media Foundation on Windows, VideoToolbox on
+    // macOS, VA-API on Linux) in front of FilmCraft's software decoders; streams they don't take,
+    // and failures mid-stream, continue in software. Registered in a statement of its own: a log
+    // macro does not evaluate its arguments while no logger takes its level.
+    // `EFFECTCRAFT_HARDWARE_DECODING=0` (or `off` / `false`) leaves them out: everything decodes in
+    // software, as before (comparisons, or a driver that misbehaves).
+    if hardware_decoding_wanted(std::env::var("EFFECTCRAFT_HARDWARE_DECODING").ok().as_deref()) {
+        let hardware = filmcraft_platform::register();
+        log::info!("hardware video decoding: {hardware:?}");
+    } else {
+        log::info!("hardware video decoding: off (EFFECTCRAFT_HARDWARE_DECODING)");
     }
     // The font menus list the installed fonts: read their names while the window opens.
     effectcraft_engine::text::fonts::scan_system_in_background();
@@ -625,6 +643,21 @@ fn disable_app_nap() {
         let opts = NSActivityOptions::UserInitiatedAllowingIdleSystemSleep | NSActivityOptions::LatencyCritical;
         // Leaked on purpose: the activity lasts for the life of the process.
         std::mem::forget(info.beginActivityWithOptions_reason(opts, &reason));
+    }
+}
+
+#[cfg(test)]
+mod hardware_decoding_tests {
+    use super::hardware_decoding_wanted;
+
+    #[test]
+    fn hardware_decoding_is_on_unless_switched_off() {
+        for on in [None, Some(""), Some("1"), Some("on"), Some("yes"), Some("nvdec")] {
+            assert!(hardware_decoding_wanted(on), "{on:?}");
+        }
+        for off in [Some("0"), Some("off"), Some(" OFF "), Some("False"), Some("no")] {
+            assert!(!hardware_decoding_wanted(off), "{off:?}");
+        }
     }
 }
 
